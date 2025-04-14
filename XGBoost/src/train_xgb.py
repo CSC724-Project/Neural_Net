@@ -159,5 +159,5 @@ def train_xgb_model(data_path, n_splits=5, params=None):
 if __name__ == "__main__":
     # Get the script's directory
     script_dir = Path(__file__).parent.parent
-    data_path = script_dir / "src" / "data" / "beegfs_test_results.csv"
+    data_path = script_dir / "src" / "data" / "beegfs_test_results4.csv"
     train_xgb_model(data_path) 
