@@ -8,7 +8,7 @@ from datetime import datetime
 from sklearn.model_selection import KFold
 from pathlib import Path
 import json
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
 from src.data.collector import MetricCollector
 from src.data.processor import FeatureProcessor
@@ -111,11 +111,11 @@ def train_model(data_path, n_splits=5, epochs=200, batch_size=64, learning_rate=
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     
     # Initialize lists to store metrics
-    mse_scores = []
-    r2_scores = []
-    rmse_scores = []
-    mae_scores = []
-    mape_scores = []
+    loss_scores = []
+    accuracy_scores = []
+    precision_scores = []
+    recall_scores = []
+    f1_scores = []
     
     # Initialize trainer with preprocessor
     trainer = ModelTrainer(input_size=X.shape[1], preprocessor=preprocessor)
@@ -129,7 +129,7 @@ def train_model(data_path, n_splits=5, epochs=200, batch_size=64, learning_rate=
         y_train, y_val = y[train_idx], y[val_idx]
         
         # Train model
-        mse, r2, metrics = trainer.train_fold(
+        loss, accuracy, metrics = trainer.train_fold(
             X_train, y_train,
             X_val, y_val,
             epochs=epochs,
@@ -138,63 +138,64 @@ def train_model(data_path, n_splits=5, epochs=200, batch_size=64, learning_rate=
         )
         
         # Store metrics
-        mse_scores.append(mse)
-        r2_scores.append(r2)
-        if 'rmse_orig' in metrics:
-            rmse_scores.append(metrics['rmse_orig'])
-            mae_scores.append(metrics['mae_orig'])
-            mape_scores.append(metrics['mape'])
-        else:
-            rmse_scores.append(metrics['rmse'])
-            mae_scores.append(metrics['mae'])
+        loss_scores.append(loss)
+        accuracy_scores.append(accuracy)
+        precision_scores.append(metrics['precision'])
+        recall_scores.append(metrics['recall'])
+        f1_scores.append(metrics['f1'])
         
-        logging.info(f"Fold {fold} - MSE: {mse:.4f}, RMSE: {metrics.get('rmse_orig', metrics['rmse']):.4f}")
-        logging.info(f"         MAE: {metrics.get('mae_orig', metrics['mae']):.4f}, R²: {r2:.4f}")
-        if 'mape' in metrics:
-            logging.info(f"         MAPE: {metrics['mape']:.4%}")
+        logging.info(f"Fold {fold} Results:")
+        logging.info(f"Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
+        logging.info(f"Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}")
+        logging.info(f"F1 Score: {metrics['f1']:.4f}")
     
     # Calculate and log average metrics
-    avg_mse = np.mean(mse_scores)
-    avg_r2 = np.mean(r2_scores)
-    avg_rmse = np.mean(rmse_scores)
-    avg_mae = np.mean(mae_scores)
-    std_mse = np.std(mse_scores)
-    std_r2 = np.std(r2_scores)
-    std_rmse = np.std(rmse_scores)
-    std_mae = np.std(mae_scores)
+    avg_loss = np.mean(loss_scores)
+    avg_accuracy = np.mean(accuracy_scores)
+    avg_precision = np.mean(precision_scores)
+    avg_recall = np.mean(recall_scores)
+    avg_f1 = np.mean(f1_scores)
+    
+    std_loss = np.std(loss_scores)
+    std_accuracy = np.std(accuracy_scores)
+    std_precision = np.std(precision_scores)
+    std_recall = np.std(recall_scores)
+    std_f1 = np.std(f1_scores)
     
     logging.info("\nOverall Results:")
-    logging.info(f"Average MSE: {avg_mse:.4f} (±{std_mse:.4f})")
-    logging.info(f"Average RMSE: {avg_rmse:.4f} (±{std_rmse:.4f})")
-    logging.info(f"Average MAE: {avg_mae:.4f} (±{std_mae:.4f})")
-    logging.info(f"Average R2 Score: {avg_r2:.4f} (±{std_r2:.4f})")
-    if mape_scores:
-        avg_mape = np.mean(mape_scores)
-        std_mape = np.std(mape_scores)
-        logging.info(f"Average MAPE: {avg_mape:.4%} (±{std_mape:.4%})")
+    logging.info(f"Average Loss: {avg_loss:.4f} (±{std_loss:.4f})")
+    logging.info(f"Average Accuracy: {avg_accuracy:.4f} (±{std_accuracy:.4f})")
+    logging.info(f"Average Precision: {avg_precision:.4f} (±{std_precision:.4f})")
+    logging.info(f"Average Recall: {avg_recall:.4f} (±{std_recall:.4f})")
+    logging.info(f"Average F1 Score: {avg_f1:.4f} (±{std_f1:.4f})")
     
     # Save results
     results = {
         "metrics": {
-            "mse": {
-                "mean": float(avg_mse),
-                "std": float(std_mse),
-                "folds": [float(score) for score in mse_scores]
+            "loss": {
+                "mean": float(avg_loss),
+                "std": float(std_loss),
+                "folds": [float(score) for score in loss_scores]
             },
-            "rmse": {
-                "mean": float(avg_rmse),
-                "std": float(std_rmse),
-                "folds": [float(score) for score in rmse_scores]
+            "accuracy": {
+                "mean": float(avg_accuracy),
+                "std": float(std_accuracy),
+                "folds": [float(score) for score in accuracy_scores]
             },
-            "mae": {
-                "mean": float(avg_mae),
-                "std": float(std_mae),
-                "folds": [float(score) for score in mae_scores]
+            "precision": {
+                "mean": float(avg_precision),
+                "std": float(std_precision),
+                "folds": [float(score) for score in precision_scores]
             },
-            "r2": {
-                "mean": float(avg_r2),
-                "std": float(std_r2),
-                "folds": [float(score) for score in r2_scores]
+            "recall": {
+                "mean": float(avg_recall),
+                "std": float(std_recall),
+                "folds": [float(score) for score in recall_scores]
+            },
+            "f1": {
+                "mean": float(avg_f1),
+                "std": float(std_f1),
+                "folds": [float(score) for score in f1_scores]
             }
         },
         "parameters": {
@@ -205,13 +206,6 @@ def train_model(data_path, n_splits=5, epochs=200, batch_size=64, learning_rate=
             "features": preprocessor.get_feature_names()
         }
     }
-    
-    if mape_scores:
-        results["metrics"]["mape"] = {
-            "mean": float(avg_mape),
-            "std": float(std_mape),
-            "folds": [float(score) for score in mape_scores]
-        }
     
     # Create results directory if it doesn't exist
     results_dir = Path("results")

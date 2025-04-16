@@ -12,18 +12,10 @@ class DataPreprocessor:
     def __init__(self, random_state=42):
         self.random_state = random_state
         self.feature_scaler = StandardScaler()
-        self.target_scaler = StandardScaler()
         self.feature_names = None
         self.feature_stats = {}
-        self.target_stats = {}
         self.plots_dir = Path("results/plots")
         self.plots_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Store target transformation parameters
-        self.target_min = None
-        self.target_max = None
-        self.target_mean = None
-        self.target_std = None
         
     def load_data(self, csv_path: str) -> Tuple[np.ndarray, np.ndarray]:
         """Load and preprocess the data."""
@@ -35,69 +27,40 @@ class DataPreprocessor:
         """Analyze data distribution and log statistics."""
         logging.info("\nData Analysis:")
         
-        # Analyze chunk size distribution
-        chunk_stats = df['chunk_size'].describe()
+        # Analyze OT distribution
+        ot_stats = df['OT'].value_counts()
         self.target_stats = {
-            'mean': chunk_stats['mean'],
-            'std': chunk_stats['std'],
-            'min': chunk_stats['min'],
-            'max': chunk_stats['max'],
-            'median': chunk_stats['50%'],
-            'q1': chunk_stats['25%'],
-            'q3': chunk_stats['75%']
+            'positive_samples': int(ot_stats.get(1, 0)),
+            'negative_samples': int(ot_stats.get(0, 0))
         }
         
         # Log basic statistics
-        logging.info("\nChunk Size Statistics:")
-        for key, value in self.target_stats.items():
-            logging.info(f"{key}: {value:.2f}")
+        logging.info("\nOptimal Throughput Statistics:")
+        total_samples = sum(self.target_stats.values())
+        logging.info(f"Total samples: {total_samples}")
+        logging.info(f"Optimal samples: {self.target_stats['positive_samples']} ({self.target_stats['positive_samples']/total_samples*100:.2f}%)")
+        logging.info(f"Non-optimal samples: {self.target_stats['negative_samples']} ({self.target_stats['negative_samples']/total_samples*100:.2f}%)")
         
-        # Plot original distribution
-        plt.figure(figsize=(10, 6))
-        sns.histplot(data=df, x='chunk_size', bins=50)
-        plt.title('Original Chunk Size Distribution')
-        plt.savefig(self.plots_dir / 'chunk_size_original_dist.png')
+        # Plot class distribution
+        plt.figure(figsize=(8, 6))
+        sns.countplot(data=df, x='OT')
+        plt.title('Optimal Throughput Distribution')
+        plt.xlabel('Is Optimal')
+        plt.ylabel('Count')
+        plt.savefig(self.plots_dir / 'ot_distribution.png')
         plt.close()
         
-        # Plot log distribution
-        plt.figure(figsize=(10, 6))
-        sns.histplot(data=df, x=np.log1p(df['chunk_size']), bins=50)
-        plt.title('Log-transformed Chunk Size Distribution')
-        plt.savefig(self.plots_dir / 'chunk_size_log_dist.png')
-        plt.close()
+        # Analyze feature correlations with OT
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        correlations = df[numeric_cols].corr()['OT'].sort_values(ascending=False)
         
-        # Analyze outliers
-        Q1 = chunk_stats['25%']
-        Q3 = chunk_stats['75%']
-        IQR = Q3 - Q1
-        outlier_low = Q1 - 1.5 * IQR
-        outlier_high = Q3 + 1.5 * IQR
-        outliers = df[(df['chunk_size'] < outlier_low) | (df['chunk_size'] > outlier_high)]
-        
-        logging.info(f"\nOutlier Analysis:")
-        logging.info(f"Number of outliers: {len(outliers)} ({len(outliers)/len(df)*100:.2f}%)")
-        logging.info(f"Outlier threshold (low): {outlier_low:.2f}")
-        logging.info(f"Outlier threshold (high): {outlier_high:.2f}")
-        
-        if len(outliers) > 0:
-            logging.info("\nOutlier Examples:")
-            logging.info(outliers[['chunk_size', 'file_size', 'access_count', 'throughput_mbps']].head())
-        
-        # Determine best scaling approach based on data distribution
-        skewness = df['chunk_size'].skew()
-        logging.info(f"\nTarget Skewness: {skewness:.2f}")
-        
-        # Store scaling approach decision
-        self.target_stats['skewness'] = skewness
-        self.target_stats['scaling_method'] = 'log_minmax' if abs(skewness) > 1 else 'robust'
-        
-        logging.info(f"Selected scaling method: {self.target_stats['scaling_method']}")
+        logging.info("\nFeature correlations with Optimal Throughput:")
+        for feat, corr in correlations.items():
+            if feat != 'OT':
+                logging.info(f"{feat}: {corr:.3f}")
     
     def _extract_features(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """Extract and engineer features from raw data."""
-        # Handle outliers in chunk_size using domain-specific approach
-        df = self._handle_outliers(df)
-        
         # Log transform size-related features
         df['log_file_size'] = np.log1p(df['file_size'])
         df['log_chunk_size'] = np.log1p(df['chunk_size'])
@@ -121,6 +84,10 @@ class DataPreprocessor:
         df['throughput_density'] = df['throughput_mbps'] / (df['file_size'] / (1024 * 1024))
         df['log_throughput'] = np.log1p(df['throughput_mbps'])
         
+        # Access count label features
+        df['access_density'] = df['access_count_label'] / (df['file_size'] / (1024 * 1024))
+        df['log_access_count'] = np.log1p(df['access_count_label'])
+        
         # Selected features
         features = [
             'log_file_size',
@@ -135,13 +102,16 @@ class DataPreprocessor:
             'norm_max_write_size',
             'throughput_density',
             'throughput_per_op',
-            'log_throughput'
+            'log_throughput',
+            'access_density',
+            'log_access_count',
+            'combination'  # New feature from dataset
         ]
         
         self.feature_names = features
         
         # Analyze feature correlations
-        correlation_matrix = df[features + ['log_chunk_size']].corr()
+        correlation_matrix = df[features + ['OT']].corr()
         plt.figure(figsize=(12, 8))
         sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0)
         plt.title('Feature Correlations')
@@ -149,119 +119,18 @@ class DataPreprocessor:
         plt.savefig(self.plots_dir / 'feature_correlations.png')
         plt.close()
         
-        # Log correlations with target
-        correlations = correlation_matrix['log_chunk_size'].sort_values(ascending=False)
-        logging.info("\nFeature correlations with log_chunk_size:")
-        for feat, corr in correlations.items():
-            if feat != 'log_chunk_size':
-                logging.info(f"{feat}: {corr:.3f}")
-        
         X = df[features].values
-        y = df['log_chunk_size'].values if self.target_stats['scaling_method'] == 'log_minmax' else df['chunk_size'].values
+        y = df['OT'].values  # Binary classification target
         
         # Clean data
         mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
         X = X[mask]
         y = y[mask]
         
-        # Scale features and target
+        # Scale features
         X_scaled = self.feature_scaler.fit_transform(X)
         
-        if self.target_stats['scaling_method'] == 'log_minmax':
-            self.target_scaler = MinMaxScaler(feature_range=(0, 1))
-        else:
-            self.target_scaler = RobustScaler()
-        
-        y_scaled = self.target_scaler.fit_transform(y.reshape(-1, 1)).ravel()
-        
-        return X_scaled, y_scaled
-    
-    def _handle_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Handle outliers using domain-specific rules."""
-        # Calculate basic statistics
-        Q1 = df['chunk_size'].quantile(0.25)
-        Q3 = df['chunk_size'].quantile(0.75)
-        IQR = Q3 - Q1
-        
-        # Define more conservative bounds for chunk sizes
-        lower_bound = max(Q1 - 2 * IQR, 4096)  # Minimum 4KB
-        upper_bound = min(Q3 + 2 * IQR, 8 * 1024 * 1024)  # Maximum 8MB
-        
-        # Filter outliers
-        mask = (df['chunk_size'] >= lower_bound) & (df['chunk_size'] <= upper_bound)
-        filtered_df = df[mask].copy()
-        
-        removed = len(df) - len(filtered_df)
-        if removed > 0:
-            logging.info(f"\nRemoved {removed} samples ({removed/len(df)*100:.2f}%) as outliers")
-            logging.info(f"Chunk size bounds: [{lower_bound/1024:.2f}KB, {upper_bound/1024/1024:.2f}MB]")
-        
-        return filtered_df
-    
-    def _transform_target(self, y):
-        """Transform target values using log transformation and standardization."""
-        # Store original range for inverse transformation
-        self.target_min = float(np.min(y))
-        self.target_max = float(np.max(y))
-        
-        # Log transform (use natural log as it's more interpretable)
-        y_log = np.log(y)
-        
-        # Standardize log-transformed values
-        y_scaled = self.target_scaler.fit_transform(y_log)
-        
-        # Store transformation parameters
-        self.target_mean = float(self.target_scaler.mean_[0])
-        self.target_std = float(self.target_scaler.scale_[0])
-        
-        # Analyze transformed distribution
-        self._analyze_target_distribution(y_scaled.ravel(), "transformed")
-        
-        return y_scaled
-    
-    def _analyze_target_distribution(self, values, label):
-        """Analyze and plot the distribution of values."""
-        # Calculate statistics
-        stats = {
-            'mean': np.mean(values),
-            'std': np.std(values),
-            'min': np.min(values),
-            'max': np.max(values),
-            'median': np.median(values),
-            'skewness': float(pd.Series(values).skew())
-        }
-        
-        # Log statistics
-        logging.info(f"\n{label.title()} Distribution Statistics:")
-        for metric, value in stats.items():
-            logging.info(f"{metric}: {value:.2f}")
-        
-        # Plot distribution
-        plt.figure(figsize=(10, 6))
-        sns.histplot(values, kde=True)
-        plt.title(f'{label.title()} Chunk Size Distribution')
-        plt.xlabel('Chunk Size')
-        plt.ylabel('Count')
-        plt.savefig(self.plots_dir / f'chunk_size_dist_{label}.png')
-        plt.close()
-        
-        # Plot Q-Q plot to check normality
-        plt.figure(figsize=(10, 6))
-        from scipy import stats
-        stats.probplot(values, dist="norm", plot=plt)
-        plt.title(f'{label.title()} Q-Q Plot')
-        plt.savefig(self.plots_dir / f'chunk_size_qq_{label}.png')
-        plt.close()
-    
-    def inverse_transform_target(self, y_scaled):
-        """Inverse transform the target values back to original scale."""
-        # Inverse standardization
-        y_log = self.target_scaler.inverse_transform(y_scaled.reshape(-1, 1))
-        
-        # Inverse log transformation
-        y_orig = np.exp(y_log)
-        
-        return y_orig.ravel()
+        return X_scaled, y
     
     def get_feature_names(self):
         """Return the list of feature names."""

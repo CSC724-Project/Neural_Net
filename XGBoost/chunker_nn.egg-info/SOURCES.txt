@@ -6,3 +6,8 @@ chunker_nn.egg-info/requires.txt
 chunker_nn.egg-info/top_level.txt
 src/__init__.py
 src/train_xgb.py
+src/data/__init__.py
+src/data/collector.py
+src/data/conversion_script.py
+src/data/preprocessor.py
+src/data/processor.py

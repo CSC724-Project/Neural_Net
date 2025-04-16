@@ -21,11 +21,11 @@ class BeeGFSConfig:
 @dataclass
 class ModelConfig:
     """Neural network model configuration"""
-    INPUT_FEATURES: int = 15
-    HIDDEN_LAYERS: List[int] = field(default_factory=lambda: [128, 64, 32])
+    INPUT_FEATURES: int = 16  # Updated for new feature set
+    HIDDEN_LAYERS: List[int] = field(default_factory=lambda: [64, 32, 16])
     LEARNING_RATE: float = 0.001
-    BATCH_SIZE: int = 64
-    EPOCHS: int = 100
+    BATCH_SIZE: int = 32  # Reduced batch size for better generalization
+    EPOCHS: int = 150  # Increased epochs for binary classification
     
     # Chunk size constraints (in KB)
     MIN_CHUNK_SIZE: int = 64    # 64KB
@@ -33,7 +33,7 @@ class ModelConfig:
     
     # Training settings
     VALIDATION_SPLIT: float = 0.2
-    EARLY_STOPPING_PATIENCE: int = 10
+    EARLY_STOPPING_PATIENCE: int = 15  # Increased patience for binary classification
     
 @dataclass
 class MetricsConfig:

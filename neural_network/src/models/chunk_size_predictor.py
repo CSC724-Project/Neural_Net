@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error, accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import logging
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -32,8 +32,9 @@ class ChunkSizePredictor(nn.Module):
                 nn.Dropout(0.2)
             ])
         
-        # Output layer
+        # Output layer for binary classification
         layers.append(nn.Linear(self.hidden_sizes[-1], 1))
+        layers.append(nn.Sigmoid())  # Sigmoid for binary classification
         
         self.network = nn.Sequential(*layers)
         
@@ -78,7 +79,7 @@ class ModelTrainer:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=5, verbose=True, min_lr=1e-6
         )
-        criterion = nn.HuberLoss(delta=0.1)  # More robust to outliers than MSE
+        criterion = nn.BCELoss()  # Binary Cross Entropy Loss for binary classification
         
         # Early stopping setup
         best_val_loss = float('inf')
@@ -117,6 +118,15 @@ class ModelTrainer:
                 val_loss = criterion(val_outputs, y_val.reshape(-1, 1))
                 val_losses.append(val_loss.item())
                 
+                # Calculate metrics
+                val_preds = (val_outputs.cpu().numpy() > 0.5).astype(int)
+                val_true = y_val.cpu().numpy()
+                
+                accuracy = accuracy_score(val_true, val_preds)
+                precision = precision_score(val_true, val_preds)
+                recall = recall_score(val_true, val_preds)
+                f1 = f1_score(val_true, val_preds)
+                
                 # Update learning rate
                 scheduler.step(val_loss)
                 
@@ -133,7 +143,10 @@ class ModelTrainer:
                     break
                 
                 if (epoch + 1) % 10 == 0:
-                    logging.info(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                    logging.info(f"Epoch {epoch+1}/{epochs}")
+                    logging.info(f"Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                    logging.info(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}")
+                    logging.info(f"Recall: {recall:.4f}, F1: {f1:.4f}")
         
         # Plot training history
         self._plot_training_history(train_losses, val_losses)
@@ -142,67 +155,40 @@ class ModelTrainer:
         if self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state)
         
-        # Final evaluation with multiple metrics
+        # Final evaluation
         metrics = self._calculate_metrics(X_val, y_val)
         
-        # Plot predictions vs actual
-        self._plot_predictions(X_val, y_val)
+        # Plot confusion matrix
+        self._plot_confusion_matrix(X_val, y_val)
         
-        # For backward compatibility, return MSE and R² as a tuple
-        if self.preprocessor is not None:
-            return metrics['mse_orig'], metrics['r2_orig'], metrics
-        return metrics['mse'], metrics['r2'], metrics
+        return metrics['loss'], metrics['accuracy'], metrics
     
     def _calculate_metrics(self, X_val, y_val):
-        """Calculate multiple evaluation metrics."""
+        """Calculate classification metrics."""
         self.model.eval()
         with torch.no_grad():
-            val_predictions = self.model(X_val).cpu().numpy()
-            y_val_np = y_val.cpu().numpy()
+            val_outputs = self.model(X_val)
+            val_loss = nn.BCELoss()(val_outputs, y_val.reshape(-1, 1))
             
-            # Calculate metrics on scaled data
-            mse = mean_squared_error(y_val_np, val_predictions)
-            rmse = np.sqrt(mse)
-            mae = mean_absolute_error(y_val_np, val_predictions)
-            r2 = r2_score(y_val_np, val_predictions)
+            # Get predictions
+            val_preds = (val_outputs.cpu().numpy() > 0.5).astype(int)
+            val_true = y_val.cpu().numpy()
             
-            # If preprocessor is available, calculate metrics on original scale
-            if self.preprocessor is not None:
-                y_true_orig = self.preprocessor.inverse_transform_target(y_val_np)
-                y_pred_orig = self.preprocessor.inverse_transform_target(val_predictions.ravel())
-                
-                mse_orig = mean_squared_error(y_true_orig, y_pred_orig)
-                rmse_orig = np.sqrt(mse_orig)
-                mae_orig = mean_absolute_error(y_true_orig, y_pred_orig)
-                mape = mean_absolute_percentage_error(y_true_orig, y_pred_orig)
-                r2_orig = r2_score(y_true_orig, y_pred_orig)
-                
-                # Log detailed metrics
-                logging.info("\nValidation Metrics (Original Scale):")
-                logging.info(f"MSE: {mse_orig:.2f}")
-                logging.info(f"RMSE: {rmse_orig:.2f}")
-                logging.info(f"MAE: {mae_orig:.2f}")
-                logging.info(f"MAPE: {mape:.4f}")
-                logging.info(f"R²: {r2_orig:.4f}")
-                
-                return {
-                    'mse': mse,
-                    'rmse': rmse,
-                    'mae': mae,
-                    'r2': r2,
-                    'mse_orig': mse_orig,
-                    'rmse_orig': rmse_orig,
-                    'mae_orig': mae_orig,
-                    'mape': mape,
-                    'r2_orig': r2_orig
-                }
+            # Calculate metrics
+            accuracy = accuracy_score(val_true, val_preds)
+            precision = precision_score(val_true, val_preds)
+            recall = recall_score(val_true, val_preds)
+            f1 = f1_score(val_true, val_preds)
             
-            return {
-                'mse': mse,
-                'rmse': rmse,
-                'mae': mae,
-                'r2': r2
+            metrics = {
+                'loss': val_loss.item(),
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1
             }
+            
+            return metrics
     
     def _plot_training_history(self, train_losses, val_losses):
         """Plot training and validation loss history."""
@@ -216,37 +202,21 @@ class ModelTrainer:
         plt.savefig(self.plots_dir / 'training_history.png')
         plt.close()
     
-    def _plot_predictions(self, X_val, y_val):
-        """Plot predicted vs actual values."""
+    def _plot_confusion_matrix(self, X_val, y_val):
+        """Plot confusion matrix of predictions."""
         self.model.eval()
         with torch.no_grad():
-            predictions = self.model(X_val).cpu().numpy()
-            y_val_np = y_val.cpu().numpy()
+            val_outputs = self.model(X_val)
+            val_preds = (val_outputs.cpu().numpy() > 0.5).astype(int)
+            val_true = y_val.cpu().numpy()
             
-            if self.preprocessor is not None:
-                y_true = self.preprocessor.inverse_transform_target(y_val_np)
-                y_pred = self.preprocessor.inverse_transform_target(predictions.ravel())
-            else:
-                y_true = y_val_np
-                y_pred = predictions.ravel()
-            
-            plt.figure(figsize=(10, 6))
-            plt.scatter(y_true, y_pred, alpha=0.5)
-            plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
-            plt.xlabel('Actual Chunk Size')
-            plt.ylabel('Predicted Chunk Size')
-            plt.title('Predicted vs Actual Chunk Sizes')
-            plt.savefig(self.plots_dir / 'predictions_scatter.png')
-            plt.close()
-            
-            # Plot error distribution
-            errors = y_pred - y_true
-            plt.figure(figsize=(10, 6))
-            sns.histplot(errors, bins=50)
-            plt.title('Prediction Error Distribution')
-            plt.xlabel('Error')
-            plt.ylabel('Count')
-            plt.savefig(self.plots_dir / 'error_distribution.png')
+            cm = confusion_matrix(val_true, val_preds)
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.title('Confusion Matrix')
+            plt.xlabel('Predicted')
+            plt.ylabel('Actual')
+            plt.savefig(self.plots_dir / 'confusion_matrix.png')
             plt.close()
     
     def predict(self, X):
@@ -255,4 +225,6 @@ class ModelTrainer:
         X = torch.FloatTensor(X).to(self.device)
         with torch.no_grad():
             predictions = self.model(X)
-        return predictions.cpu().numpy().reshape(-1) 
+            # Convert probabilities to binary predictions
+            binary_predictions = (predictions.cpu().numpy() > 0.5).astype(int)
+        return binary_predictions 

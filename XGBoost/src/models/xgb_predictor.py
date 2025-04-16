@@ -1,6 +1,6 @@
 import xgboost as xgb
 import numpy as np
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 import logging
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -22,8 +22,8 @@ class XGBChunkPredictor:
         """Train XGBoost model on a single fold."""
         if params is None:
             params = {
-                'objective': 'reg:squarederror',
-                'eval_metric': ['rmse', 'mae'],
+                'objective': 'binary:logistic',
+                'eval_metric': ['logloss', 'error', 'auc'],
                 'eta': 0.01,
                 'max_depth': 6,
                 'min_child_weight': 1,
@@ -31,11 +31,18 @@ class XGBChunkPredictor:
                 'colsample_bytree': 0.8,
                 'n_estimators': 1000,
                 'early_stopping_rounds': 50,
-                'seed': 42
+                'seed': 42,
+                'scale_pos_weight': 1  # Will be updated based on class distribution
             }
         elif 'learning_rate' in params:
             # Convert learning_rate to eta if present
             params['eta'] = params.pop('learning_rate')
+        
+        # Calculate class weights if needed
+        if self.preprocessor is not None:
+            class_stats = self.preprocessor.get_target_stats()['class_balance']
+            if 0 in class_stats and 1 in class_stats:
+                params['scale_pos_weight'] = class_stats[0] / class_stats[1]
         
         # Create DMatrix for XGBoost
         dtrain = xgb.DMatrix(X_train, label=y_train)
@@ -63,95 +70,98 @@ class XGBChunkPredictor:
         # Calculate metrics
         metrics = self._calculate_metrics(model, X_val, y_val)
         
-        # Plot predictions vs actual
+        # Plot predictions
         self._plot_predictions(model, X_val, y_val)
         
         # Store best model
         self.best_model = model
         
-        # Return metrics in the same format as the neural network for consistency
-        if self.preprocessor is not None:
-            return metrics['mse_orig'], metrics['r2_orig'], metrics
-        return metrics['mse'], metrics['r2'], metrics
+        return metrics['logloss'], metrics['accuracy'], metrics
     
     def _calculate_metrics(self, model, X_val, y_val):
-        """Calculate regression metrics."""
+        """Calculate classification metrics."""
         # Get predictions
         dval = xgb.DMatrix(X_val)
-        val_pred = model.predict(dval)
+        val_pred_proba = model.predict(dval)
+        val_pred = (val_pred_proba > 0.5).astype(int)
         
-        # Calculate metrics on scaled data
-        mse = mean_squared_error(y_val, val_pred)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_val, val_pred)
-        r2 = r2_score(y_val, val_pred)
+        # Calculate metrics
+        accuracy = accuracy_score(y_val, val_pred)
+        precision = precision_score(y_val, val_pred)
+        recall = recall_score(y_val, val_pred)
+        f1 = f1_score(y_val, val_pred)
+        auc_roc = roc_auc_score(y_val, val_pred_proba)
+        conf_matrix = confusion_matrix(y_val, val_pred)
+        
+        # Calculate logloss
+        epsilon = 1e-15
+        val_pred_proba = np.clip(val_pred_proba, epsilon, 1 - epsilon)
+        logloss = -np.mean(y_val * np.log(val_pred_proba) + (1 - y_val) * np.log(1 - val_pred_proba))
         
         metrics = {
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'auc_roc': auc_roc,
+            'logloss': logloss,
+            'confusion_matrix': conf_matrix
         }
         
-        # If preprocessor is available, calculate metrics on original scale
-        if self.preprocessor is not None:
-            y_true_orig = self.preprocessor.inverse_transform_target(y_val)
-            y_pred_orig = self.preprocessor.inverse_transform_target(val_pred)
-            
-            mse_orig = mean_squared_error(y_true_orig, y_pred_orig)
-            rmse_orig = np.sqrt(mse_orig)
-            mae_orig = mean_absolute_error(y_true_orig, y_pred_orig)
-            mape = mean_absolute_percentage_error(y_true_orig, y_pred_orig)
-            r2_orig = r2_score(y_true_orig, y_pred_orig)
-            
-            # Log metrics
-            logging.info("\nValidation Metrics (Original Scale):")
-            logging.info(f"MSE: {mse_orig:.2f}")
-            logging.info(f"RMSE: {rmse_orig:.2f}")
-            logging.info(f"MAE: {mae_orig:.2f}")
-            logging.info(f"MAPE: {mape:.4f}")
-            logging.info(f"R²: {r2_orig:.4f}")
-            
-            metrics.update({
-                'mse_orig': mse_orig,
-                'rmse_orig': rmse_orig,
-                'mae_orig': mae_orig,
-                'mape': mape,
-                'r2_orig': r2_orig
-            })
+        # Log metrics
+        logging.info("\nValidation Metrics:")
+        logging.info(f"Accuracy: {accuracy:.4f}")
+        logging.info(f"Precision: {precision:.4f}")
+        logging.info(f"Recall: {recall:.4f}")
+        logging.info(f"F1 Score: {f1:.4f}")
+        logging.info(f"AUC-ROC: {auc_roc:.4f}")
+        logging.info(f"Log Loss: {logloss:.4f}")
+        logging.info("\nConfusion Matrix:")
+        logging.info(f"{conf_matrix}")
         
         return metrics
     
     def _plot_predictions(self, model, X_val, y_val):
-        """Plot predicted vs actual values."""
+        """Plot ROC curve and confusion matrix."""
         dval = xgb.DMatrix(X_val)
-        predictions = model.predict(dval)
+        pred_proba = model.predict(dval)
+        pred = (pred_proba > 0.5).astype(int)
         
-        if self.preprocessor is not None:
-            y_true = self.preprocessor.inverse_transform_target(y_val)
-            y_pred = self.preprocessor.inverse_transform_target(predictions)
-        else:
-            y_true = y_val
-            y_pred = predictions
+        # Plot ROC curve
+        from sklearn.metrics import roc_curve
+        fpr, tpr, _ = roc_curve(y_val, pred_proba)
         
-        # Scatter plot
-        plt.figure(figsize=(10, 6))
-        plt.scatter(y_true, y_pred, alpha=0.5)
-        plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
-        plt.xlabel('Actual Chunk Size')
-        plt.ylabel('Predicted Chunk Size')
-        plt.title('XGBoost: Predicted vs Actual Chunk Sizes')
-        plt.savefig(self.plots_dir / 'predictions_scatter.png')
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr)
+        plt.plot([0, 1], [0, 1], 'r--')
+        plt.xlim([0, 1])
+        plt.ylim([0, 1])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('ROC Curve')
+        plt.savefig(self.plots_dir / 'roc_curve.png')
         plt.close()
         
-        # Error distribution
-        errors = y_pred - y_true
+        # Plot confusion matrix
+        conf_matrix = confusion_matrix(y_val, pred)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title('Confusion Matrix')
+        plt.savefig(self.plots_dir / 'confusion_matrix.png')
+        plt.close()
+        
+        # Plot probability distribution
         plt.figure(figsize=(10, 6))
-        sns.histplot(errors, bins=50)
-        plt.title('XGBoost: Prediction Error Distribution')
-        plt.xlabel('Error')
+        for i in range(2):
+            mask = y_val == i
+            plt.hist(pred_proba[mask], bins=50, alpha=0.5, label=f'Class {i}')
+        plt.xlabel('Predicted Probability')
         plt.ylabel('Count')
-        plt.savefig(self.plots_dir / 'error_distribution.png')
+        plt.title('Prediction Probability Distribution by Class')
+        plt.legend()
+        plt.savefig(self.plots_dir / 'probability_distribution.png')
         plt.close()
     
     def _plot_feature_importance(self):
