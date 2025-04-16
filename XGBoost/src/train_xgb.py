@@ -5,6 +5,7 @@ from sklearn.model_selection import KFold
 from pathlib import Path
 import json
 import os
+import joblib
 
 from src.data.preprocessor import DataPreprocessor
 from src.models.xgb_predictor import XGBChunkPredictor
@@ -16,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def train_xgb_model(data_path, n_splits=5, params=None):
+def train_xgb_model(data_path, n_splits=5, params=None, save_dir="models"):
     """
     Train the XGBoost optimal throughput predictor using k-fold cross validation.
     
@@ -24,6 +25,7 @@ def train_xgb_model(data_path, n_splits=5, params=None):
         data_path (str): Path to the CSV data file
         n_splits (int): Number of folds for cross-validation
         params (dict): XGBoost parameters
+        save_dir (str): Directory to save the model and preprocessor
     """
     # Initialize preprocessor and load data
     preprocessor = DataPreprocessor()
@@ -59,6 +61,9 @@ def train_xgb_model(data_path, n_splits=5, params=None):
     trainer = XGBChunkPredictor(preprocessor=preprocessor)
     
     # Perform k-fold training
+    best_fold_score = float('inf')
+    best_fold = None
+    
     for fold, (train_idx, val_idx) in enumerate(kf.split(X), 1):
         logging.info(f"\nTraining Fold {fold}/{n_splits}")
         
@@ -80,6 +85,12 @@ def train_xgb_model(data_path, n_splits=5, params=None):
         recall_scores.append(metrics['recall'])
         f1_scores.append(metrics['f1'])
         auc_scores.append(metrics['auc_roc'])
+        
+        # Keep track of best model
+        if logloss < best_fold_score:
+            best_fold_score = logloss
+            best_fold = fold
+            best_trainer = trainer
         
         logging.info(f"Fold {fold} - Logloss: {logloss:.4f}, Accuracy: {accuracy:.4f}")
         logging.info(f"         Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}")
@@ -145,19 +156,40 @@ def train_xgb_model(data_path, n_splits=5, params=None):
         "parameters": {
             "n_splits": n_splits,
             "model_params": params,
-            "features": preprocessor.get_feature_names()
+            "features": preprocessor.get_feature_names(),
+            "best_fold": best_fold
         }
     }
     
-    # Create results directory if it doesn't exist
+    # Create save directories
+    save_path = Path(save_dir)
+    save_path.mkdir(exist_ok=True)
     results_dir = Path("results")
     results_dir.mkdir(exist_ok=True)
     
-    # Save results to JSON
+    # Save model, preprocessor and results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_path = save_path / f"xgb_model_{timestamp}"
+    model_path.mkdir(exist_ok=True)
+    
+    # Save the best model and preprocessor
+    best_trainer.best_model.save_model(str(model_path / "model.json"))
+    joblib.dump(preprocessor, model_path / "preprocessor.joblib")
+    
+    # Save model info
+    with open(model_path / "model_info.json", "w") as f:
+        json.dump({
+            "timestamp": timestamp,
+            "metrics": results["metrics"],
+            "parameters": results["parameters"]
+        }, f, indent=4)
+    
+    # Save results to results directory
     with open(results_dir / "xgboost_results.json", "w") as f:
         json.dump(results, f, indent=4)
     
-    return trainer
+    logging.info(f"\nModel saved to: {model_path}")
+    return best_trainer
 
 if __name__ == "__main__":
     # Get the script's directory
